@@ -76,6 +76,13 @@ mark{background:linear-gradient(transparent 58%,#ffd9e4 58%);color:inherit;paddi
 .field input{width:100%;font:inherit;font-size:16px;padding:14px 14px;border:2px solid var(--line);border-radius:12px;background:#fff;color:var(--ink)}
 .field input:focus{outline:0;border-color:var(--berry)}
 #paypal-buttons{min-height:56px;margin-top:6px}
+.cf{height:50px;border:2px solid var(--line);border-radius:12px;background:#fff;padding:0 6px;overflow:hidden}
+.cf.paypal-hosted-fields-focus,.cf:focus-within{border-color:var(--berry)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.or{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:.85rem;margin:18px 0 6px}
+.or::before,.or::after{content:"";flex:1;height:1px;background:var(--line)}
+#card-pay[disabled]{opacity:.6;cursor:wait}
+.cardhead{font-weight:700;margin:4px 0 10px}
 .msg{font-size:.92rem;margin-top:10px;padding:10px 12px;border-radius:10px;display:none}
 .msg.err{display:block;background:#ffe7ea;color:#9b1c34}
 .msg.info{display:block;background:var(--mint-soft);color:#14654f}
@@ -257,6 +264,17 @@ footer p{margin-bottom:8px}
         <div class="field"><label for="fn">Full name</label><input id="fn" type="text" autocomplete="name" placeholder="Jane Smith"></div>
         <div class="field"><label for="em">Email</label><input id="em" type="email" autocomplete="email" inputmode="email" placeholder="you@email.com"></div>
 
+        <div id="card-section" style="display:none">
+          <div class="cardhead">💳 Pay with card</div>
+          <div class="field"><label>Card number</label><div id="card-number" class="cf"></div></div>
+          <div class="row2">
+            <div class="field"><label>Expiry</label><div id="card-expiry" class="cf"></div></div>
+            <div class="field"><label>CVV</label><div id="card-cvv" class="cf"></div></div>
+          </div>
+          <div class="field"><label>Name on card</label><div id="card-name" class="cf"></div></div>
+          <button class="btn" id="card-pay" type="button" style="max-width:none">Pay $27 Securely</button>
+          <div class="or"><span>or pay with PayPal</span></div>
+        </div>
         <div id="paypal-buttons"></div>
         <div class="unavailable" id="unavail">Checkout is loading. If the PayPal button doesn't appear, please refresh the page.</div>
         <div class="msg" id="msg" role="status" aria-live="polite"></div>
@@ -374,9 +392,49 @@ footer p{margin-bottom:8px}
     $("buy").scrollIntoView({behavior:"smooth",block:"start"});
   }
 
+  // Inline card payment (PayPal Card Fields). Hidden automatically if the PayPal account isn't eligible.
+  function setupCard(){
+    try{
+      if(!paypal.CardFields) return;
+      var cf = paypal.CardFields({
+        style:{input:{"font-size":"16px","font-family":"Inter, system-ui, sans-serif",color:"#2a1f2d",padding:"12px"},".invalid":{color:"#9b1c34"}},
+        createOrder:function(){
+          return api({action:"create",method:"card",full_name:$("fn").value.trim(),email:$("em").value.trim()}).then(function(r){
+            if(!r.ok||!r.order_id) throw new Error(r.error||"Could not start the payment.");
+            return r.order_id;
+          });
+        },
+        onApprove:function(data){
+          show($("msg"),"info","Payment received. Confirming and unlocking your download…");
+          return api({action:"capture",order_id:data.orderID}).then(function(r){
+            $("card-pay").disabled=false;
+            if(r.ok&&r.download_url){showSuccess(r)}
+            else{show($("msg"),"err",r.error||"We couldn't confirm the payment.")}
+          });
+        },
+        onError:function(err){
+          $("card-pay").disabled=false;
+          show($("msg"),"err",(err&&err.message&&err.message.length<160)?err.message:"The card could not be processed. Please check the details and try again.");
+        }
+      });
+      if(!cf.isEligible()) return;
+      cf.NumberField({placeholder:"1234 5678 9012 3456"}).render("#card-number");
+      cf.ExpiryField({placeholder:"MM / YY"}).render("#card-expiry");
+      cf.CVVField({placeholder:"CVV"}).render("#card-cvv");
+      cf.NameField({placeholder:"Full name on card"}).render("#card-name");
+      $("card-section").style.display="block";
+      $("card-pay").addEventListener("click",function(){
+        if(!valid()) return;
+        $("card-pay").disabled=true;
+        show($("msg"),"info","Processing your card…");
+        cf.submit().catch(function(){ $("card-pay").disabled=false; });
+      });
+    }catch(e){ /* card fields unavailable: PayPal button still works */ }
+  }
+
   function loadPayPal(cfg){
     var s=document.createElement("script");
-    s.src="https://www.paypal.com/sdk/js?client-id="+encodeURIComponent(cfg.client_id)+"&currency="+encodeURIComponent(cfg.currency||"USD")+"&intent=capture&components=buttons&disable-funding=venmo";
+    s.src="https://www.paypal.com/sdk/js?client-id="+encodeURIComponent(cfg.client_id)+"&currency="+encodeURIComponent(cfg.currency||"USD")+"&intent=capture&components=buttons,card-fields&disable-funding=venmo";
     s.onload=function(){
       paypal.Buttons({
         style:{layout:"vertical",shape:"pill",color:"gold",label:"pay",height:50},
@@ -397,6 +455,7 @@ footer p{margin-bottom:8px}
         onCancel:function(){show($("msg"),"info","Payment cancelled. You have not been charged.")},
         onError:function(err){show($("msg"),"err",(err&&err.message)||"Something went wrong with the payment. You have not been charged.")}
       }).render("#paypal-buttons");
+      setupCard();
     };
     s.onerror=function(){$("unavail").style.display="block"};
     document.head.appendChild(s);
